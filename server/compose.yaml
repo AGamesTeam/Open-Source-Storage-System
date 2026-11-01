@@ -1,0 +1,14 @@
+services:
+  osss:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    env_file: .env
+    environment:
+      OSSS_DB_PATH: /data/osss.db
+    volumes:
+      - osss-data:/data
+
+volumes:
+  osss-data:

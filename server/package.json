@@ -1,0 +1,21 @@
+{
+  "name": "osss-server",
+  "version": "0.1.0",
+  "description": "Self-hosted storage server for Roblox games",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/main.ts",
+    "gen-key": "node scripts/gen-key.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
