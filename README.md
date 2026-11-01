@@ -93,8 +93,9 @@ Be honest with yourself before switching:
 - [x] **Migration helper:** move data off Roblox DataStores gradually or all at once
 - [x] **Easy self-hosting:** one command with Docker, or Node.js with no dependencies
 - [x] **Install your way:** copy and paste, Rojo, or Wally
+- [x] **Working example:** a [clicker game](examples/clicker) with saved leaderstats and a leaderboard
 - [ ] Postgres support for very large or multi-server setups
-- [ ] Example place file
+- [ ] Ready-to-open example place file (`.rbxl`)
 
 ## Quick start
 
@@ -147,6 +148,7 @@ end)
 - [Self-hosting](docs/self-hosting.md): running the server, HTTPS, settings, limited-access keys, the dashboard and backups
 - [Using OSSS in Roblox](docs/roblox.md): setup, every method, player data with session locking, caching, leaderboards, and moving from DataStores
 - [HTTP API](docs/api.md): for calling the server from bots, websites and other tools
+- [Clicker example](examples/clicker): a small working game with a button, saved leaderstats, session locking and a top 10 board
 
 ## Things to know before you self-host
 
@@ -161,6 +163,7 @@ end)
 server/    The self-hosted storage server and dashboard (Node.js + SQLite)
 roblox/    The Luau module you add to your game
 docs/      Guides for setup, the Roblox module and the HTTP API
+examples/  Small working games that use OSSS
 ```
 
 ## Contributing

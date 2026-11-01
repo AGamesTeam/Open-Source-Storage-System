@@ -40,7 +40,7 @@ jobs:
           unzip -q luau.zip -d "$RUNNER_TEMP/luau"
       - name: Compile every Luau file
         run: |
-          for file in roblox/src/*.luau; do
+          for file in roblox/src/*.luau $(find examples -name '*.luau'); do
             echo "Checking $file"
             "$RUNNER_TEMP/luau/luau-compile" --text "$file" > /dev/null
           done

@@ -53,6 +53,8 @@ Values can be anything `HttpService:JSONEncode` handles: tables, strings, number
 
 ## Player data with session locking
 
+> Want to see this running? The [clicker example](../examples/clicker) is a complete game built on this pattern.
+
 A session lock makes sure only one server can save a player's data at a time. It stops data loss when a player rejoins quickly and their old server is still saving.
 
 While a server holds the lock, writes to that key from any other server fail. Locks expire on their own, so a crashed server can't hold one forever. Renew them while the player is in game.
