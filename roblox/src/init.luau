@@ -2,7 +2,7 @@
 	Open Source Storage System (OSSS) client for Roblox
 	https://github.com/AGamesTeam/Open-Source-Storage-System
 
-	Put this ModuleScript in ServerScriptService. It only works on the server,
+	Put this ModuleScript in ServerScriptService, named OSSS. It only works on the server,
 	and needs "Allow HTTP Requests" turned on in Game Settings > Security.
 
 		local OSSS = require(ServerScriptService.OSSS)
@@ -28,6 +28,20 @@ export type Config = {
 	maxRetries: number?,
 	-- How many times UpdateAsync retries when another server wrote first. Default 10.
 	updateRetries: number?,
+	-- Seconds to remember values read or written by this server, so repeat GetAsync
+	-- calls don't use an HTTP request. Default 0 (off). Other servers' writes won't
+	-- show up until the cached value expires, so keep this short.
+	cacheSeconds: number?,
+}
+
+export type GetOptions = {
+	-- Set to false to skip the cache and always ask the server.
+	useCache: boolean?,
+}
+
+export type SortedEntry = {
+	key: string,
+	value: number,
 }
 
 export type KeyInfo = {
@@ -38,14 +52,29 @@ export type KeyInfo = {
 -- Identifies this server for session locks. JobId is empty in Studio, so fall back to a GUID.
 local SERVER_ID = if game.JobId ~= "" then game.JobId else HttpService:GenerateGUID(false)
 
+local CACHE_SWEEP_SECONDS = 60
+
 local OSSS = {}
 OSSS.__index = OSSS
+OSSS.version = "0.1.0"
 
 local DataStore = {}
 DataStore.__index = DataStore
 
 local function toInfo(data): KeyInfo
 	return { version = data.version, updatedAt = data.updatedAt }
+end
+
+-- Cached tables are copied in and out so game code can't change the cached version by accident.
+local function deepCopy(value)
+	if type(value) ~= "table" then
+		return value
+	end
+	local copy = {}
+	for k, v in value do
+		copy[deepCopy(k)] = deepCopy(v)
+	end
+	return copy
 end
 
 local function fail(what: string, status: number, data): never
@@ -70,6 +99,8 @@ function OSSS.new(config: Config)
 	self._auth = auth
 	self._maxRetries = config.maxRetries or 3
 	self._updateRetries = config.updateRetries or 10
+	self._cacheSeconds = config.cacheSeconds or 0
+	self._stores = {}
 	return self
 end
 
@@ -120,13 +151,26 @@ function OSSS:_request(method: string, path: string, body: any?, retry: boolean)
 	error(string.format("[OSSS] %s %s failed: %s", method, path, lastError), 0)
 end
 
--- Returns a store object. Stores are created on the server the first time you write to them.
+--[[
+	Returns the store object for name. Calling it again with the same name returns the
+	same object, so they share a cache. Stores are created on the server the first time
+	you write to them.
+]]
 function OSSS:GetDataStore(name: string)
 	assert(type(name) == "string" and name ~= "", "[OSSS] GetDataStore expects a store name")
+	local existing = self._stores[name]
+	if existing then
+		return existing
+	end
+
 	local store = setmetatable({}, DataStore)
+	store.Name = name
 	store._client = self
-	store._name = name
-	store._path = "/v1/stores/" .. HttpService:UrlEncode(name) .. "/keys"
+	store._storePath = "/v1/stores/" .. HttpService:UrlEncode(name)
+	store._path = store._storePath .. "/keys"
+	store._cache = {}
+	store._nextSweep = 0
+	self._stores[name] = store
 	return store
 end
 
@@ -153,16 +197,54 @@ function DataStore:_keyPath(key: string): string
 	return self._path .. "/" .. HttpService:UrlEncode(key)
 end
 
+function DataStore:_remember(key: string, value: any, info: KeyInfo?)
+	local seconds = self._client._cacheSeconds
+	if seconds <= 0 then
+		return
+	end
+
+	local now = os.clock()
+	if now >= self._nextSweep then
+		for cachedKey, entry in self._cache do
+			if entry.expires <= now then
+				self._cache[cachedKey] = nil
+			end
+		end
+		self._nextSweep = now + CACHE_SWEEP_SECONDS
+	end
+	self._cache[key] = { value = deepCopy(value), info = info, expires = now + seconds }
+end
+
+-- Forgets cached values for key, or for every key if none is given.
+function DataStore:ClearCache(key: string?)
+	if key then
+		self._cache[key] = nil
+	else
+		table.clear(self._cache)
+	end
+end
+
 -- Returns the value stored at key (or nil), and its KeyInfo.
-function DataStore:GetAsync(key: string): (any, KeyInfo?)
-	local status, data = self._client:_request("GET", self:_keyPath(key), nil, true)
+function DataStore:GetAsync(key: string, options: GetOptions?): (any, KeyInfo?)
+	local path = self:_keyPath(key)
+	if not (options and options.useCache == false) then
+		local cached = self._cache[key]
+		if cached and cached.expires > os.clock() then
+			return deepCopy(cached.value), if cached.info then table.clone(cached.info) else nil
+		end
+	end
+
+	local status, data = self._client:_request("GET", path, nil, true)
 	if status == 404 then
+		self:_remember(key, nil, nil)
 		return nil, nil
 	end
 	if status ~= 200 then
 		fail("GetAsync", status, data)
 	end
-	return data.value, toInfo(data)
+	local info = toInfo(data)
+	self:_remember(key, data.value, info)
+	return data.value, info
 end
 
 -- Stores value at key, replacing what was there. Returns the new version number.
@@ -172,6 +254,7 @@ function DataStore:SetAsync(key: string, value: any): number
 	if status ~= 200 then
 		fail("SetAsync", status, data)
 	end
+	self:_remember(key, value, toInfo(data))
 	return data.version
 end
 
@@ -195,7 +278,9 @@ function DataStore:UpdateAsync(key: string, transform: (any, KeyInfo?) -> any): 
 		-- Not retried: if a write landed but the reply was lost, a retry would apply transform twice.
 		local status, data = self._client:_request("PUT", path, { value = newValue, ifVersion = version }, false)
 		if status == 200 then
-			return newValue, toInfo(data)
+			local newInfo = toInfo(data)
+			self:_remember(key, newValue, newInfo)
+			return newValue, newInfo
 		elseif status == 409 and type(data) == "table" and data.error == "version_conflict" then
 			if data.current then
 				current, info = data.current.value, toInfo(data.current)
@@ -213,13 +298,11 @@ end
 -- Deletes key. Returns the value it held, or nil if there was none.
 function DataStore:RemoveAsync(key: string): any
 	local status, data = self._client:_request("DELETE", self:_keyPath(key), nil, true)
-	if status == 404 then
-		return nil
-	end
-	if status ~= 200 then
+	if status ~= 200 and status ~= 404 then
 		fail("RemoveAsync", status, data)
 	end
-	return data.value
+	self._cache[key] = nil
+	return if status == 200 then data.value else nil
 end
 
 -- Adds delta (default 1) to the number stored at key, starting from 0. Returns the new number.
@@ -228,6 +311,7 @@ function DataStore:IncrementAsync(key: string, delta: number?): number
 	if status ~= 200 then
 		fail("IncrementAsync", status, data)
 	end
+	self:_remember(key, data.value, toInfo(data))
 	return data.value
 end
 
@@ -248,6 +332,40 @@ function DataStore:ListKeysAsync(prefix: string?, pageSize: number?, cursor: str
 		fail("ListKeysAsync", status, data)
 	end
 	return data.keys, data.nextCursor
+end
+
+--[[
+	Returns keys whose value is a number, sorted by that number, for leaderboards.
+	Works like OrderedDataStore:GetSortedAsync, but returns a plain list and a cursor
+	instead of a pages object. Keys holding non-numbers are skipped.
+
+		local top, cursor = scores:GetSortedAsync(false, 10)
+		for rank, entry in top do
+			print(rank, entry.key, entry.value)
+		end
+]]
+function DataStore:GetSortedAsync(
+	ascending: boolean,
+	pageSize: number?,
+	minValue: number?,
+	maxValue: number?,
+	cursor: string?
+): ({ SortedEntry }, string?)
+	local query = string.format("?order=%s&limit=%d", if ascending then "asc" else "desc", pageSize or 50)
+	if minValue then
+		query ..= "&min=" .. HttpService:UrlEncode(tostring(minValue))
+	end
+	if maxValue then
+		query ..= "&max=" .. HttpService:UrlEncode(tostring(maxValue))
+	end
+	if cursor then
+		query ..= "&cursor=" .. HttpService:UrlEncode(cursor)
+	end
+	local status, data = self._client:_request("GET", self._storePath .. "/sorted" .. query, nil, true)
+	if status ~= 200 then
+		fail("GetSortedAsync", status, data)
+	end
+	return data.entries, data.nextCursor
 end
 
 --[[

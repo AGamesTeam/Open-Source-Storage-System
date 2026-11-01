@@ -4,6 +4,8 @@
 !.env.example
 *.pem
 *.key
+keys.json
+*.jsonl
 
 # Local data and databases
 data/

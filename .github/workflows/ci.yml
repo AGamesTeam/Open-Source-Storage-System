@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: Server (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  luau:
+    name: Luau syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Luau
+        run: |
+          curl -fsSL -o luau.zip https://github.com/luau-lang/luau/releases/latest/download/luau-ubuntu.zip
+          unzip -q luau.zip -d "$RUNNER_TEMP/luau"
+      - name: Compile every Luau file
+        run: |
+          for file in roblox/src/*.luau; do
+            echo "Checking $file"
+            "$RUNNER_TEMP/luau/luau-compile" --text "$file" > /dev/null
+          done
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t osss-server server
+      - name: Smoke test
+        run: |
+          docker run -d --name osss -p 8787:8787 -e OSSS_API_KEYS=ci-smoke-test-key-0123456789abcdefgh osss-server
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8787/health && exit 0; sleep 1; done
+          docker logs osss
+          exit 1

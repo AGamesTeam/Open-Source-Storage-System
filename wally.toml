@@ -1,0 +1,12 @@
+[package]
+name = "agamesteam/osss"
+description = "Self-hosted data storage for Roblox games, shaped like the DataStore API"
+version = "0.1.0"
+license = "MIT"
+authors = ["AGamesTeam"]
+repository = "https://github.com/AGamesTeam/Open-Source-Storage-System"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "server"
+exclude = ["server", "docs", ".github", "**/node_modules"]
+
+[dependencies]

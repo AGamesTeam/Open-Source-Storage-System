@@ -1,0 +1,13 @@
+[
+  {
+    "name": "game",
+    "key": "replace-with-output-of-npm-run-gen-key-000",
+    "access": "write"
+  },
+  {
+    "name": "discord-bot",
+    "key": "replace-with-output-of-npm-run-gen-key-001",
+    "access": "read",
+    "stores": ["Leaderboard", "Stats"]
+  }
+]

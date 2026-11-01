@@ -1,18 +1,34 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
+import { runBackup } from "../src/backup.ts";
 import { loadConfig } from "../src/config.ts";
 import { createApp } from "../src/server.ts";
 import { Storage } from "../src/storage.ts";
 
 const API_KEY = "test-key-that-is-long-enough-for-osss-0001";
+const READ_KEY = "read-only-key-that-is-long-enough-0000001";
+const SCOPED_KEY = "scoped-write-key-that-is-long-enough-00001";
 
 let baseUrl: string;
+let storage: Storage;
 let close: () => Promise<void>;
+const tempDir = mkdtempSync(join(tmpdir(), "osss-test-"));
 
 before(async () => {
-  const config = loadConfig({ OSSS_API_KEYS: API_KEY, OSSS_MAX_BODY_BYTES: "1024" });
-  const storage = new Storage(":memory:");
+  const keysFile = join(tempDir, "keys.json");
+  writeFileSync(
+    keysFile,
+    JSON.stringify([
+      { name: "reader", key: READ_KEY, access: "read" },
+      { name: "scoped", key: SCOPED_KEY, access: "write", stores: ["allowed"] },
+    ]),
+  );
+  const config = loadConfig({ OSSS_API_KEYS: API_KEY, OSSS_KEYS_FILE: keysFile, OSSS_MAX_BODY_BYTES: "1024" });
+  storage = new Storage(join(tempDir, "test.db"));
   const server = createApp(config, storage);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -25,7 +41,10 @@ before(async () => {
     );
 });
 
-after(() => close());
+after(async () => {
+  await close();
+  rmSync(tempDir, { recursive: true, force: true });
+});
 
 async function call(
   method: string,
@@ -56,6 +75,48 @@ describe("auth", () => {
   test("refuses to start without a key", () => {
     assert.throws(() => loadConfig({}), /OSSS_API_KEYS/);
     assert.throws(() => loadConfig({ OSSS_API_KEYS: "short" }), /at least 32/);
+  });
+
+  test("whoami describes the key", async () => {
+    const me = await call("GET", "/v1/whoami", undefined, { Authorization: `Bearer ${READ_KEY}` });
+    assert.deepEqual(me.data, { name: "reader", access: "read", stores: null });
+  });
+
+  test("read-only keys can read but not write", async () => {
+    await call("PUT", "/v1/stores/perm/keys/a", { value: 1 });
+    const reader = { Authorization: `Bearer ${READ_KEY}` };
+    assert.equal((await call("GET", "/v1/stores/perm/keys/a", undefined, reader)).status, 200);
+    assert.equal((await call("PUT", "/v1/stores/perm/keys/a", { value: 2 }, reader)).status, 403);
+    assert.equal((await call("DELETE", "/v1/stores/perm/keys/a/lock?force=true", undefined, reader)).status, 403);
+
+    const batch = await call("POST", "/v1/batch", {
+      operations: [
+        { op: "get", store: "perm", key: "a" },
+        { op: "set", store: "perm", key: "a", value: 3 },
+      ],
+    }, reader);
+    assert.equal(batch.data.results[0].ok, true);
+    assert.equal(batch.data.results[1].status, 403);
+  });
+
+  test("store-scoped keys only see their stores", async () => {
+    const scoped = { Authorization: `Bearer ${SCOPED_KEY}` };
+    assert.equal((await call("PUT", "/v1/stores/allowed/keys/a", { value: 1 }, scoped)).status, 200);
+    assert.equal((await call("PUT", "/v1/stores/other/keys/a", { value: 1 }, scoped)).status, 403);
+    assert.equal((await call("GET", "/v1/stores/perm/keys/a", undefined, scoped)).status, 403);
+
+    const { data } = await call("GET", "/v1/stores", undefined, scoped);
+    assert.deepEqual(data.stores.map((s: { name: string }) => s.name), ["allowed"]);
+  });
+});
+
+describe("dashboard", () => {
+  test("is served without a key, with a strict content policy", async () => {
+    const res = await fetch(`${baseUrl}/dashboard`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /text\/html/);
+    assert.match(res.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+    assert.match(await res.text(), /OSSS Dashboard/);
   });
 });
 
@@ -117,6 +178,30 @@ describe("keys", () => {
     assert.equal(page2.data.nextCursor, null);
   });
 
+  test("lists stores with key counts", async () => {
+    const { data } = await call("GET", "/v1/stores");
+    const list = data.stores.find((s: { name: string }) => s.name === "list");
+    assert.equal(list.keys, 4);
+  });
+
+  test("sorts numeric values for leaderboards", async () => {
+    const scores: Record<string, unknown> = { ann: 50, bob: 120, cat: 75, dan: 120, eve: "not a number" };
+    for (const [key, value] of Object.entries(scores)) await call("PUT", `/v1/stores/scores/keys/${key}`, { value });
+
+    const top = await call("GET", "/v1/stores/scores/sorted?limit=3");
+    assert.deepEqual(top.data.entries, [
+      { key: "bob", value: 120 },
+      { key: "dan", value: 120 },
+      { key: "cat", value: 75 },
+    ]);
+    const next = await call("GET", `/v1/stores/scores/sorted?limit=3&cursor=${top.data.nextCursor}`);
+    assert.deepEqual(next.data.entries, [{ key: "ann", value: 50 }]);
+    assert.equal(next.data.nextCursor, null);
+
+    const ranged = await call("GET", "/v1/stores/scores/sorted?order=asc&min=60&max=100");
+    assert.deepEqual(ranged.data.entries, [{ key: "cat", value: 75 }]);
+  });
+
   test("rejects bad bodies", async () => {
     assert.equal((await call("PUT", "/v1/stores/a/keys/b", { nope: 1 })).status, 400);
     const big = await call("PUT", "/v1/stores/a/keys/b", { value: "x".repeat(2000) });
@@ -140,6 +225,15 @@ describe("session locks", () => {
     assert.equal((await call("PUT", path, { value: 1 })).status, 423);
     assert.equal((await call("PUT", path, { value: 1 }, serverA)).status, 200);
     assert.equal((await call("GET", path, undefined, serverB)).status, 200);
+  });
+
+  test("anyone with read access can see the lock, and admins can force it open", async () => {
+    const seen = await call("GET", `${path}/lock`);
+    assert.equal(seen.data.lock.owner, "server-a");
+
+    assert.equal((await call("DELETE", `${path}/lock?force=true`)).data.released, true);
+    assert.equal((await call("GET", `${path}/lock`)).data.lock, null);
+    await call("POST", `${path}/lock`, { ttlSeconds: 60 }, serverA);
   });
 
   test("unlocking lets other servers in", async () => {
@@ -175,5 +269,26 @@ describe("batch", () => {
   test("batch keys are used as-is, not URL-decoded", async () => {
     await call("POST", "/v1/batch", { operations: [{ op: "set", store: "batch", key: "100%", value: 1 }] });
     assert.equal((await call("GET", `/v1/stores/batch/keys/${encodeURIComponent("100%")}`)).data.value, 1);
+  });
+});
+
+describe("backup and export", () => {
+  test("backups are complete copies and old ones are pruned", async () => {
+    const dir = join(tempDir, "backups");
+    for (let i = 0; i < 3; i++) {
+      await runBackup(storage, dir, 2);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const files = readdirSync(dir);
+    assert.equal(files.length, 2);
+
+    const copy = new Storage(join(dir, files[1]));
+    assert.deepEqual(copy.get("players", "versioned")?.value, 2);
+    copy.close();
+  });
+
+  test("export yields every entry", () => {
+    const entries = [...storage.exportAll()];
+    assert.ok(entries.some((e) => e.store === "scores" && e.key === "bob" && e.value === 120));
   });
 });

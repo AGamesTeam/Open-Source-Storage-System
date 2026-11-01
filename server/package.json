@@ -11,6 +11,8 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/main.ts",
     "gen-key": "node scripts/gen-key.ts",
+    "backup": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env scripts/backup.ts",
+    "export": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env scripts/export.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc"
   },

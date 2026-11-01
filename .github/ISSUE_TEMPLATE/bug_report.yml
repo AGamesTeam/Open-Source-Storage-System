@@ -1,0 +1,38 @@
+name: Bug report
+description: Something isn't working the way it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start the server with ...
+        2. Call storage:GetAsync(...)
+        3. See the error
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error messages or logs
+      description: From the Roblox output window and/or the server. Remove your API key first!
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: OSSS version
+      placeholder: "0.1.0"
+  - type: dropdown
+    id: hosting
+    attributes:
+      label: How are you running the server?
+      options:
+        - Docker
+        - Node.js
+        - Other

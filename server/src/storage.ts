@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { backup, DatabaseSync } from "node:sqlite";
 
 export interface Entry {
   value: unknown;
@@ -125,6 +125,63 @@ export class Storage {
       .all(store, prefix.length, prefix, cursor, limit + 1) as { key: string }[];
     const keys = rows.slice(0, limit).map((row) => row.key);
     return { keys, nextCursor: rows.length > limit ? keys[keys.length - 1] : null };
+  }
+
+  /** Keys whose value is a number, sorted by that number. Used for leaderboards. */
+  sorted(
+    store: string,
+    options: { descending: boolean; limit: number; offset: number; min?: number; max?: number },
+  ): { entries: { key: string; value: number }[]; nextCursor: string | null } {
+    const filters = ["store = ?", "json_type(value) IN ('integer', 'real')"];
+    const params: (string | number)[] = [store];
+    if (options.min !== undefined) {
+      filters.push("CAST(value AS REAL) >= ?");
+      params.push(options.min);
+    }
+    if (options.max !== undefined) {
+      filters.push("CAST(value AS REAL) <= ?");
+      params.push(options.max);
+    }
+    const direction = options.descending ? "DESC" : "ASC";
+    const rows = this.#db
+      .prepare(
+        `SELECT key, value FROM entries WHERE ${filters.join(" AND ")}
+         ORDER BY CAST(value AS REAL) ${direction}, key LIMIT ? OFFSET ?`,
+      )
+      .all(...params, options.limit + 1, options.offset) as { key: string; value: string }[];
+    const entries = rows.slice(0, options.limit).map((row) => ({ key: row.key, value: Number(row.value) }));
+    const hasMore = rows.length > options.limit;
+    return { entries, nextCursor: hasMore ? String(options.offset + options.limit) : null };
+  }
+
+  listStores(): { name: string; keys: number }[] {
+    return this.#db
+      .prepare("SELECT store AS name, COUNT(*) AS keys FROM entries GROUP BY store ORDER BY store")
+      .all() as { name: string; keys: number }[];
+  }
+
+  getLock(store: string, key: string): Lock | null {
+    return this.#activeLock(store, key);
+  }
+
+  /** Removes a lock no matter who holds it. For admins clearing a stuck lock. */
+  forceUnlock(store: string, key: string): boolean {
+    return this.#db.prepare("DELETE FROM locks WHERE store = ? AND key = ?").run(store, key).changes > 0;
+  }
+
+  *exportAll(): Generator<{ store: string; key: string } & Entry> {
+    const rows = this.#db
+      .prepare("SELECT store, key, value, version, updated_at FROM entries ORDER BY store, key")
+      .iterate() as Iterable<EntryRow & { store: string; key: string }>;
+    for (const row of rows) {
+      yield { store: row.store, key: row.key, value: JSON.parse(row.value), version: row.version, updatedAt: row.updated_at };
+    }
+  }
+
+  /** Writes a consistent copy of the database to path. Safe while the server is running. */
+  async backupTo(path: string): Promise<void> {
+    mkdirSync(dirname(path), { recursive: true });
+    await backup(this.#db, path);
   }
 
   /** Takes or renews a session lock. Throws LockedError if another owner holds it. */

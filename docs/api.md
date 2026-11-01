@@ -19,18 +19,37 @@ Writes can also send `OSSS-Lock-Owner: <server id>` to identify who is writing, 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
 | `GET` | `/health` | | `{ "ok": true }` |
+| `GET` | `/dashboard` | | The [admin dashboard](self-hosting.md#dashboard) page (no key needed to load it) |
+| `GET` | `/v1/whoami` | | `{ name, access, stores }` for the key you used |
+| `GET` | `/v1/stores` | | `{ stores: [{ name, keys }] }`, only stores your key can read |
 | `GET` | `/v1/stores/{store}/keys/{key}` | | `{ value, version, updatedAt }` or `404` |
 | `PUT` | `/v1/stores/{store}/keys/{key}` | `{ value, ifVersion? }` | `{ version, updatedAt }` |
 | `DELETE` | `/v1/stores/{store}/keys/{key}?ifVersion=` | | `{ value, version, updatedAt }` (the removed entry) or `404` |
 | `POST` | `/v1/stores/{store}/keys/{key}/increment` | `{ delta? }` | `{ value, version, updatedAt }` |
 | `GET` | `/v1/stores/{store}/keys?prefix=&limit=&cursor=` | | `{ keys, nextCursor }` |
+| `GET` | `/v1/stores/{store}/sorted?order=&limit=&cursor=&min=&max=` | | `{ entries: [{ key, value }], nextCursor }` |
+| `GET` | `/v1/stores/{store}/keys/{key}/lock` | | `{ lock: { owner, expiresAt } }` or `{ lock: null }` |
 | `POST` | `/v1/stores/{store}/keys/{key}/lock` | `{ ttlSeconds }` | `{ owner, expiresAt }` |
 | `DELETE` | `/v1/stores/{store}/keys/{key}/lock` | | `{ released }` |
+| `DELETE` | `/v1/stores/{store}/keys/{key}/lock?force=true` | | `{ released }`. Admin keys only. Removes anyone's lock. |
 | `POST` | `/v1/batch` | `{ operations }` | `{ results }` |
 
 - `version` goes up by 1 on every write, starting at 1. It restarts if the key is removed.
 - `updatedAt` is a Unix timestamp in milliseconds.
 - `limit` for listing defaults to 100, max 1000. Pass the returned `nextCursor` as `cursor` to get the next page.
+- `sorted` only includes keys whose value is a number. `order` is `desc` (default) or `asc`. Ties are sorted by key.
+
+## Permissions
+
+What a key can do depends on its `access` level and `stores` list. See [limited-access keys](self-hosting.md#limited-access-keys).
+
+| Needs | Endpoints |
+| --- | --- |
+| `read` | Every `GET`, and `get` in a batch |
+| `write` | `PUT`, `DELETE`, increment, lock and unlock, and other batch operations |
+| `admin` | Force unlock |
+
+A request the key isn't allowed to make gets `403`. In a batch, only that operation fails.
 
 ## Safe updates with `ifVersion`
 
@@ -81,6 +100,7 @@ Inside a batch, store names and keys are plain strings, not URL-encoded. Results
 | --- | --- | --- |
 | 400 | `bad_request` | The request is missing something or has the wrong type. |
 | 401 | `unauthorized` | Missing or wrong API key. |
+| 403 | `forbidden` | The key doesn't have access to that store or action. |
 | 404 | `not_found` | No value for that key, or unknown endpoint. |
 | 409 | `version_conflict` | `ifVersion` didn't match. |
 | 409 | `not_a_number` | Tried to increment a value that isn't a number. |

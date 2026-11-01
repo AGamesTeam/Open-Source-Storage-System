@@ -4,10 +4,12 @@ WORKDIR /app
 COPY package.json ./
 COPY src ./src
 COPY scripts ./scripts
+COPY public ./public
 
 ENV OSSS_HOST=0.0.0.0 \
     OSSS_PORT=8787 \
-    OSSS_DB_PATH=/data/osss.db
+    OSSS_DB_PATH=/data/osss.db \
+    OSSS_BACKUP_DIR=/data/backups
 
 RUN mkdir -p /data && chown node:node /data
 USER node

@@ -9,6 +9,8 @@ services:
       OSSS_DB_PATH: /data/osss.db
     volumes:
       - osss-data:/data
+      # To use limited-access keys, uncomment this and set OSSS_KEYS_FILE=/app/keys.json in .env
+      # - ./keys.json:/app/keys.json:ro
 
 volumes:
   osss-data:
