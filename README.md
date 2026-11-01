@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
 
-> **Status: alpha (v0.1).** The server, dashboard and Roblox module work, but the API may still change before 1.0. Test it before trusting it with a live game, and keep backups.
+> **Status: alpha (v0.2).** The server, dashboard and Roblox module work, but the API may still change before 1.0. Test it before trusting it with a live game, and keep backups.
 
 ---
 
@@ -29,7 +29,9 @@ Open Source Storage System (OSSS) gives you a storage server you host yourself, 
 
 **🤖 Discord bots, websites and admin tools.** Anything that can send an HTTP request can read your game's data. Show a live leaderboard on your website, or let a Discord bot look up player stats, using a [read-only key](docs/self-hosting.md#limited-access-keys) that can't change anything.
 
-**🛠️ Live ops and support.** A player lost their items? Open the [dashboard](docs/self-hosting.md#dashboard), find their key, and fix it in a few seconds, without writing a script or publishing an update.
+**🛠️ Live ops and support.** A player lost their items? Open the [dashboard](docs/self-hosting.md#dashboard), find their key, look through its history, and restore yesterday's version in one click, without writing a script or publishing an update.
+
+**📣 Live events.** Flip a value in the dashboard and every running server hears about it within a second through `Watch`: double coins, a shop rotation, or an announcement.
 
 **📈 Busy games that get throttled.** OSSS has no per-key write cooldown and no budget tied to player count. You batch up to 100 operations into one request, so a few HTTP calls a minute can cover a whole server.
 
@@ -49,11 +51,13 @@ Open Source Storage System (OSSS) gives you a storage server you host yourself, 
 | **Rate limits** | Per server, scales with players | Only Roblox's HTTP limit, with batching to stretch it | The provider's limits |
 | **Feels like DataStores in Luau** | ✅ | ✅ | ❌ |
 | **Session locking built in** | ❌ (you build it, or use a library) | ✅ | ❌ |
+| **Version history and rollback** | ✅ | ✅ Restore from the dashboard in one click | Varies |
+| **Live updates across servers** | Separate service (MessagingService) | ✅ `Watch` on any store | ✅ |
 | **Share data between experiences** | ❌ | ✅ | ✅ |
 | **Access from outside Roblox** | Through Open Cloud | ✅ Direct HTTP API with scoped keys | ✅ |
 | **Admin dashboard** | Creator Dashboard data store manager | ✅ Built in | ✅ |
 | **Who keeps it online** | Roblox | You | The provider |
-| **Backups** | Roblox keeps version history | Built-in automatic backups, kept where you choose | The provider |
+| **Backups** | Handled by Roblox | Built-in automatic backups, copied where you choose | The provider |
 
 ### When *not* to use it
 
@@ -87,9 +91,12 @@ Be honest with yourself before switching:
 - [x] **Leaderboards:** `GetSortedAsync` with paging and value ranges
 - [x] **Batching:** up to 100 reads and writes in one HTTP request
 - [x] **Caching:** optional, so repeat reads don't use HTTP requests
-- [x] **Admin dashboard:** browse, search, edit and delete data, and clear stuck locks
+- [x] **Version history:** the last 20 versions of every key, restorable from the dashboard or Luau
+- [x] **Live change notifications:** `Watch` a store and every server hears about changes within a second
+- [x] **Admin dashboard:** browse, search, edit, delete and restore data, and clear stuck locks
 - [x] **Limited-access keys:** read-only or store-restricted keys for bots and tools
-- [x] **Backups and export:** automatic backups, plus export to JSON
+- [x] **Backups and export:** automatic backups, copies to a second drive, and export to JSON
+- [x] **Discord tools:** downtime alerts, and a live leaderboard message
 - [x] **Migration helper:** move data off Roblox DataStores gradually or all at once
 - [x] **Easy self-hosting:** one command with Docker, or Node.js with no dependencies
 - [x] **Install your way:** copy and paste, Rojo, or Wally

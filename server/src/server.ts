@@ -2,12 +2,21 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { hasAccess, type Access, type ApiKey, type Config } from "./config.ts";
-import { LockedError, NotANumberError, VersionConflictError, type Entry, type Storage } from "./storage.ts";
+import {
+  HistoryNotFoundError,
+  LockedError,
+  NotANumberError,
+  VersionConflictError,
+  type Entry,
+  type Storage,
+} from "./storage.ts";
 
 const MAX_NAME_LENGTH = 512;
 const MAX_LIST_LIMIT = 1000;
 const MAX_BATCH_OPERATIONS = 100;
 const MAX_LOCK_TTL_SECONDS = 24 * 60 * 60;
+const MAX_CHANGES_WAIT_SECONDS = 25;
+const MAX_CHANGES_LIMIT = 500;
 
 const DASHBOARD_HTML = readFileSync(new URL("../public/dashboard.html", import.meta.url));
 const DASHBOARD_HEADERS = {
@@ -46,7 +55,46 @@ export function createApp(config: Config, storage: Storage): Server {
     return found;
   }
 
-  async function route(req: IncomingMessage, url: URL): Promise<[number, Json]> {
+  /** Resolves when store changes, the wait runs out, or the client goes away. */
+  function waitForChange(store: string, ms: number, res: ServerResponse): Promise<void> {
+    return new Promise((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        storage.off("change", onChange);
+        res.off("close", done);
+        resolve();
+      };
+      const onChange = (changed: string): void => {
+        if (changed === store) done();
+      };
+      const timer = setTimeout(done, ms);
+      storage.on("change", onChange);
+      res.on("close", done);
+    });
+  }
+
+  async function changesFeed(store: string, url: URL, res: ServerResponse): Promise<Json> {
+    const ids = storage.changeIds();
+    const sinceRaw = url.searchParams.get("since");
+    // No cursor yet: start watching from now.
+    if (sinceRaw === null || sinceRaw === "") return { changes: [], cursor: ids.latest, reset: false };
+
+    const since = readInt(sinceRaw, 0, "since");
+    const limit = Math.max(1, Math.min(readInt(url.searchParams.get("limit"), 100, "limit"), MAX_CHANGES_LIMIT));
+    const wait = Math.min(readInt(url.searchParams.get("wait"), 0, "wait"), MAX_CHANGES_WAIT_SECONDS);
+    // Changes between since and the oldest kept id were pruned, so the caller may have missed some.
+    const reset = ids.oldest > since + 1;
+
+    let changes = storage.changes(store, since, limit);
+    if (changes.length === 0 && wait > 0) {
+      await waitForChange(store, wait * 1000, res);
+      changes = storage.changes(store, since, limit);
+    }
+    const cursor = changes.length > 0 ? changes[changes.length - 1].id : Math.max(since, storage.changeIds().latest);
+    return { changes, cursor, reset };
+  }
+
+  async function route(req: IncomingMessage, url: URL, res: ServerResponse): Promise<[number, Json]> {
     const parts = url.pathname.split("/").filter((part) => part !== "");
     const method = req.method ?? "GET";
 
@@ -101,6 +149,12 @@ export function createApp(config: Config, storage: Storage): Server {
       ];
     }
 
+    if (parts.length === 4 && parts[3] === "changes") {
+      if (method !== "GET") throw methodNotAllowed();
+      need("read", store);
+      return [200, await changesFeed(store, url, res)];
+    }
+
     if (parts.length < 4 || parts[3] !== "keys") throw notFound();
 
     if (parts.length === 4) {
@@ -147,6 +201,30 @@ export function createApp(config: Config, storage: Storage): Server {
       return [200, entryJson(storage.increment(store, key, readDelta(body.delta), { lockOwner }))];
     }
 
+    if (parts.length === 6 && parts[5] === "history") {
+      if (method !== "GET") throw methodNotAllowed();
+      need("read", store);
+      const limit = Math.max(1, Math.min(readInt(url.searchParams.get("limit"), 50, "limit"), MAX_LIST_LIMIT));
+      return [200, { versions: storage.history(store, key, limit) }];
+    }
+
+    if (parts.length === 7 && parts[5] === "history") {
+      if (method !== "GET") throw methodNotAllowed();
+      need("read", store);
+      const entry = storage.historyEntry(store, key, readInt(parts[6], 0, "id"));
+      if (!entry) throw new HistoryNotFoundError();
+      return [200, { ...entry }];
+    }
+
+    if (parts.length === 6 && parts[5] === "restore") {
+      if (method !== "POST") throw methodNotAllowed();
+      need("write", store);
+      const body = await readJson(req, config.maxBodyBytes);
+      if (typeof body.id !== "number" || !Number.isInteger(body.id)) throw badRequest("Body must include the history `id` to restore.");
+      const entry = storage.restore(store, key, body.id, { ifVersion: readVersion(body.ifVersion), lockOwner });
+      return [200, metaJson(entry)];
+    }
+
     if (parts.length === 6 && parts[5] === "lock") {
       if (method === "GET") {
         need("read", store);
@@ -180,7 +258,7 @@ export function createApp(config: Config, storage: Storage): Server {
     let status: number;
     let body: Json;
     try {
-      [status, body] = await route(req, url);
+      [status, body] = await route(req, url, res);
     } catch (err) {
       [status, body] = errorResponse(err);
     }
@@ -248,6 +326,7 @@ function errorResponse(err: unknown): [number, Json] {
     return [423, { error: "locked", message: err.message, owner: err.lock.owner, expiresAt: err.lock.expiresAt }];
   }
   if (err instanceof NotANumberError) return [409, { error: "not_a_number", message: err.message }];
+  if (err instanceof HistoryNotFoundError) return [404, { error: "not_found", message: err.message }];
   console.error(err);
   return [500, { error: "internal", message: "Something went wrong on the server." }];
 }

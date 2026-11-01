@@ -28,6 +28,10 @@ Writes can also send `OSSS-Lock-Owner: <server id>` to identify who is writing, 
 | `POST` | `/v1/stores/{store}/keys/{key}/increment` | `{ delta? }` | `{ value, version, updatedAt }` |
 | `GET` | `/v1/stores/{store}/keys?prefix=&limit=&cursor=` | | `{ keys, nextCursor }` |
 | `GET` | `/v1/stores/{store}/sorted?order=&limit=&cursor=&min=&max=` | | `{ entries: [{ key, value }], nextCursor }` |
+| `GET` | `/v1/stores/{store}/keys/{key}/history?limit=` | | `{ versions: [{ id, version, op, updatedAt, size, author }] }`, newest first |
+| `GET` | `/v1/stores/{store}/keys/{key}/history/{id}` | | `{ id, version, op, value, updatedAt, author }` |
+| `POST` | `/v1/stores/{store}/keys/{key}/restore` | `{ id, ifVersion? }` | `{ version, updatedAt }` |
+| `GET` | `/v1/stores/{store}/changes?since=&wait=&limit=` | | `{ changes, cursor, reset }`. See [change feed](#change-feed). |
 | `GET` | `/v1/stores/{store}/keys/{key}/lock` | | `{ lock: { owner, expiresAt } }` or `{ lock: null }` |
 | `POST` | `/v1/stores/{store}/keys/{key}/lock` | `{ ttlSeconds }` | `{ owner, expiresAt }` |
 | `DELETE` | `/v1/stores/{store}/keys/{key}/lock` | | `{ released }` |
@@ -65,6 +69,28 @@ If someone else wrote first, you get `409` with the current entry, so you can re
 }
 ```
 
+## Version history
+
+Every write is recorded. The server keeps the newest `OSSS_HISTORY_VERSIONS` versions of each key (20 by default), for up to `OSSS_HISTORY_DAYS` days (30 by default). Each key's newest version is always kept.
+
+- `op` is `set` for a saved value, or `remove` for a deletion. Removes have no value.
+- `author` is the `OSSS-Lock-Owner` of whoever wrote it, if they sent one. For the Luau module, that's the game server's `JobId`.
+- `id` identifies one recorded write. Use it to fetch or restore that version.
+
+`restore` saves an old version's value as a new version. It goes through the same lock and `ifVersion` checks as `PUT`, and the value it replaces stays in history, so a restore can be undone too. Restoring an `id` whose `op` is `remove`, or one that's been pruned, returns `404`.
+
+To bring back a deleted key, list its history (it still has one after deletion) and restore the last `set`.
+
+## Change feed
+
+Lets other servers find out when keys change, without checking every key.
+
+1. Call `GET /v1/stores/{store}/changes` with no `since`. It returns `cursor`, the starting point.
+2. Call it again with `since=<cursor>&wait=20`. If something already changed, it returns at once. Otherwise it waits up to `wait` seconds (max 25) for a write, then returns.
+3. Each change is `{ id, key, op, version, value, updatedAt, author }`, oldest first. Use the returned `cursor` as `since` next time.
+
+`reset` is `true` if history was pruned past your `since`, so changes in between may be missing. Re-read anything you care about. If a key changes more than `OSSS_HISTORY_VERSIONS` times between two polls, only the newest versions are returned. You always get the latest value.
+
 ## Session locks
 
 `POST .../lock` with an `OSSS-Lock-Owner` header takes the lock, or renews it if you already hold it. `ttlSeconds` can be 1 to 86400.
@@ -101,7 +127,7 @@ Inside a batch, store names and keys are plain strings, not URL-encoded. Results
 | 400 | `bad_request` | The request is missing something or has the wrong type. |
 | 401 | `unauthorized` | Missing or wrong API key. |
 | 403 | `forbidden` | The key doesn't have access to that store or action. |
-| 404 | `not_found` | No value for that key, or unknown endpoint. |
+| 404 | `not_found` | No value for that key, no such history version, or unknown endpoint. |
 | 409 | `version_conflict` | `ifVersion` didn't match. |
 | 409 | `not_a_number` | Tried to increment a value that isn't a number. |
 | 413 | `too_large` | Body is bigger than `OSSS_MAX_BODY_BYTES`. |

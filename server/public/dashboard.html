@@ -46,6 +46,11 @@
   #status.error { color: var(--danger); }
   #status.ok { color: var(--ok); }
   .empty { color: var(--muted); padding: 8px 0; }
+  .history li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .history li:last-child { border-bottom: 0; }
+  .history .current { color: var(--ok); font-weight: 600; }
+  .history .removed { color: var(--danger); }
+  pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; max-height: 240px; overflow: auto; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; }
   .lock { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
   @media (max-width: 860px) {
     main { grid-template-columns: 1fr; }
@@ -87,6 +92,16 @@
         <button id="reload">Reload</button>
         <button class="danger" id="delete">Delete</button>
       </div>
+      <h2 style="margin-top:20px">History</h2>
+      <ul id="history" class="history"></ul>
+      <div id="preview" hidden>
+        <div class="meta" id="preview-meta"></div>
+        <pre id="preview-value"></pre>
+        <div class="row">
+          <button class="primary" id="restore">Restore this version</button>
+          <button id="close-preview">Close</button>
+        </div>
+      </div>
     </div>
     <div id="no-key" class="empty">Pick a key to view or edit it.</div>
     <div class="row" style="margin-top:16px">
@@ -100,7 +115,7 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const enc = encodeURIComponent;
-const state = { apiKey: "", store: null, key: null, version: 0, cursor: null };
+const state = { apiKey: "", store: null, key: null, version: 0, cursor: null, previewId: null };
 
 function remember(value) {
   try { sessionStorage.setItem("osss-key", value); } catch {}
@@ -225,8 +240,73 @@ async function openKey(key) {
     showLock(lockInfo.lock);
     $("editor").hidden = false;
     $("no-key").hidden = true;
+    closePreview();
+    await loadHistory();
   } catch (err) {
     setStatus(err.message, "error");
+  }
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+
+async function loadHistory() {
+  const { versions } = await api("GET", `/v1/stores/${enc(state.store)}/keys/${enc(state.key)}/history?limit=20`);
+  const list = $("history");
+  list.replaceChildren(...versions.map((v, i) => {
+    const li = document.createElement("li");
+    const text = document.createElement("span");
+    const when = new Date(v.updatedAt).toLocaleString();
+    if (v.op === "remove") {
+      text.className = "removed";
+      text.textContent = `Deleted (was v${v.version}) · ${when}`;
+    } else {
+      text.textContent = `v${v.version} · ${when} · ${formatSize(v.size)}` + (v.author ? ` · ${v.author}` : "");
+      if (i === 0 && v.version === state.version) text.classList.add("current");
+    }
+    li.append(text);
+    if (v.op === "set") {
+      const view = document.createElement("button");
+      view.textContent = i === 0 && v.version === state.version ? "Current" : "View";
+      view.disabled = i === 0 && v.version === state.version;
+      view.addEventListener("click", () => showVersion(v.id));
+      li.append(view);
+    }
+    return li;
+  }));
+  if (versions.length === 0) list.replaceChildren(emptyItem("No history yet."));
+}
+
+async function showVersion(id) {
+  try {
+    const v = await api("GET", `/v1/stores/${enc(state.store)}/keys/${enc(state.key)}/history/${id}`);
+    state.previewId = id;
+    $("preview-meta").textContent = `Version ${v.version} from ${new Date(v.updatedAt).toLocaleString()}`;
+    $("preview-value").textContent = JSON.stringify(v.value, null, 2);
+    $("preview").hidden = false;
+  } catch (err) {
+    setStatus(err.message, "error");
+  }
+}
+
+function closePreview() {
+  state.previewId = null;
+  $("preview").hidden = true;
+}
+
+async function restoreVersion() {
+  if (!state.previewId) return;
+  if (!confirm("Restore this version? It's saved as a new version, so you can undo it the same way.")) return;
+  try {
+    await api("POST", `/v1/stores/${enc(state.store)}/keys/${enc(state.key)}/restore`, { id: state.previewId, ifVersion: state.version });
+    await openKey(state.key);
+    setStatus("Restored.", "ok");
+  } catch (err) {
+    if (err.status === 409) setStatus("Someone changed this key since you opened it. Reload and try again.", "error");
+    else setStatus(err.message, "error");
   }
 }
 
@@ -320,6 +400,8 @@ $("save").addEventListener("click", save);
 $("reload").addEventListener("click", () => openKey(state.key));
 $("delete").addEventListener("click", remove);
 $("create").addEventListener("click", create);
+$("restore").addEventListener("click", restoreVersion);
+$("close-preview").addEventListener("click", closePreview);
 
 const saved = recall();
 if (saved) {

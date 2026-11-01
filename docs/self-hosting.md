@@ -67,6 +67,11 @@ All settings are environment variables. Put them in `server/.env`.
 | `OSSS_BACKUP_INTERVAL_HOURS` | `0` (off) | Make an automatic backup every this many hours. |
 | `OSSS_BACKUP_DIR` | `backups` | Where backups go. In Docker it's `/data/backups`, inside the data volume. |
 | `OSSS_BACKUP_KEEP` | `14` | How many automatic backups to keep. Older ones are deleted. `0` keeps all of them. |
+| `OSSS_BACKUP_COPY_DIR` | | A second folder that every backup is copied to. Point it at another drive. See [off-machine backups](#off-machine-backups). |
+| `OSSS_HISTORY_VERSIONS` | `20` | How many versions of each key to keep for [version history](roblox.md#version-history). At least 1. |
+| `OSSS_HISTORY_DAYS` | `30` | Delete history older than this many days. Each key's newest version is always kept. `0` turns off age-based deletion. |
+
+History stores a full copy of every version. If you save very large values often, lower `OSSS_HISTORY_VERSIONS` to save disk space.
 
 Using several keys lets you rotate them: add the new key, update your game, then remove the old one.
 
@@ -95,6 +100,8 @@ Your game only needs a `write` key. Keep admin keys for yourself and the dashboa
 
 Open `/dashboard` on your server, for example <http://localhost:8787/dashboard>, and paste in an API key. From there you can browse stores, search keys, view and edit values, delete keys, and see or clear session locks.
 
+Each key has a **History** list. Click **View** on any version to see what it held, then **Restore this version** to put it back.
+
 Edits from the dashboard use the same version checks as your game, so you can't overwrite a change you haven't seen. Keys locked by a live game server can't be edited until the lock is released. Admin keys can force-unlock them, but only do that if you're sure the server holding the lock is gone.
 
 The dashboard only keeps your key for the browser tab you're using. Closing the tab forgets it.
@@ -121,7 +128,39 @@ docker compose exec osss node scripts/export.ts /data/my-export.jsonl     # Dock
 
 **Restoring a backup:** stop the server, delete `osss.db-wal` and `osss.db-shm` if they exist, copy the backup over `osss.db`, then start the server again.
 
-Keep at least some backups on a different machine or drive. A backup on the same disk won't help if the disk dies.
+### Off-machine backups
+
+A backup on the same disk as the database won't help if that disk dies. Set `OSSS_BACKUP_COPY_DIR` to a folder on another drive, and every backup is copied there too, with the same `OSSS_BACKUP_KEEP` limit.
+
+With Docker, mount the other folder into the container in `compose.yaml`:
+
+```yaml
+    volumes:
+      - osss-data:/data
+      - D:/OSSS-Backups:/backup-copy
+```
+
+Then set `OSSS_BACKUP_COPY_DIR=/backup-copy` in `.env`. A folder synced by OneDrive, Google Drive or Dropbox works too, and gets your backups off the machine completely.
+
+## Discord alerts and leaderboard
+
+Two optional tools in `server/tools/` post to Discord through a webhook. In Discord, open *Channel settings → Integrations → Webhooks → New Webhook*, then copy its URL.
+
+**Uptime monitor:** posts when the server stops responding, and again when it's back.
+
+```bash
+MONITOR_URL=https://storage.example.com/health DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... npm run monitor
+```
+
+Run it on a different machine from the server if you can. If both are on one PC and the whole PC goes down, nothing's left to send the alert.
+
+**Leaderboard:** keeps one message in a channel updated with a store's top scores, with Roblox usernames.
+
+```bash
+OSSS_URL=https://storage.example.com OSSS_API_KEY=<read-only key> DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... LEADERBOARD_STORE=ClickLeaderboard npm run discord-leaderboard
+```
+
+Give it a `read` key limited to that store (see [limited-access keys](#limited-access-keys)). The comment at the top of each file lists every setting. You can also put the settings in `server/.env` instead of the command line. To keep them running, use a process manager such as [pm2](https://pm2.keymetrics.io/): `pm2 start tools/uptime-monitor.ts --interpreter node`.
 
 ## Updating
 

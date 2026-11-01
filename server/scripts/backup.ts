@@ -6,10 +6,11 @@ import { Storage } from "../src/storage.ts";
 const dbPath = process.env.OSSS_DB_PATH || "data/osss.db";
 const backupDir = process.env.OSSS_BACKUP_DIR || "backups";
 const keep = Number(process.env.OSSS_BACKUP_KEEP || 14);
+const copyDir = process.env.OSSS_BACKUP_COPY_DIR || "";
 
 const storage = new Storage(dbPath);
 try {
-  console.log(`Backup saved to ${await runBackup(storage, backupDir, keep)}`);
+  console.log(`Backup saved to ${await runBackup(storage, backupDir, keep, copyDir)}${copyDir ? ` and copied to ${copyDir}` : ""}`);
 } finally {
   storage.close();
 }

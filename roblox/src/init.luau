@@ -49,14 +49,42 @@ export type KeyInfo = {
 	updatedAt: number,
 }
 
+export type VersionInfo = {
+	-- Pass this to GetVersionAsync or RestoreVersionAsync.
+	id: number,
+	version: number,
+	-- "set" for a saved value, "remove" for a deletion.
+	op: string,
+	updatedAt: number,
+	-- Size of the saved value in bytes.
+	size: number,
+	-- JobId of the server that saved it, if known.
+	author: string?,
+}
+
+export type ChangeInfo = {
+	version: number,
+	updatedAt: number,
+	-- "set" or "remove". For "remove", value is nil.
+	op: string,
+	-- True if this server made the change.
+	fromThisServer: boolean,
+}
+
+export type Watcher = {
+	Stop: (self: Watcher) -> (),
+}
+
 -- Identifies this server for session locks. JobId is empty in Studio, so fall back to a GUID.
 local SERVER_ID = if game.JobId ~= "" then game.JobId else HttpService:GenerateGUID(false)
 
 local CACHE_SWEEP_SECONDS = 60
+-- How long the server holds a Watch request open waiting for a change.
+local WATCH_WAIT_SECONDS = 20
 
 local OSSS = {}
 OSSS.__index = OSSS
-OSSS.version = "0.1.0"
+OSSS.version = "0.2.0"
 
 local DataStore = {}
 DataStore.__index = DataStore
@@ -393,6 +421,111 @@ function DataStore:UnlockAsync(key: string): boolean
 		fail("UnlockAsync", status, data)
 	end
 	return data.released
+end
+
+--[[
+	Lists saved versions of key, newest first. The server keeps the last 20 by default.
+	Use it to look up what a player had before something went wrong.
+]]
+function DataStore:ListVersionsAsync(key: string, limit: number?): { VersionInfo }
+	local path = self:_keyPath(key) .. string.format("/history?limit=%d", limit or 20)
+	local status, data = self._client:_request("GET", path, nil, true)
+	if status ~= 200 then
+		fail("ListVersionsAsync", status, data)
+	end
+	return data.versions
+end
+
+-- Returns the value saved in one version from ListVersionsAsync, and its KeyInfo.
+function DataStore:GetVersionAsync(key: string, id: number): (any, KeyInfo?)
+	local status, data = self._client:_request("GET", self:_keyPath(key) .. "/history/" .. tostring(id), nil, true)
+	if status == 404 then
+		return nil, nil
+	end
+	if status ~= 200 then
+		fail("GetVersionAsync", status, data)
+	end
+	return data.value, toInfo(data)
+end
+
+--[[
+	Saves an old version's value back as the newest version. The current value stays
+	in history, so a restore can itself be undone. Returns the new version number.
+]]
+function DataStore:RestoreVersionAsync(key: string, id: number): number
+	local status, data = self._client:_request("POST", self:_keyPath(key) .. "/restore", { id = id }, true)
+	if status ~= 200 then
+		fail("RestoreVersionAsync", status, data)
+	end
+	self._cache[key] = nil
+	return data.version
+end
+
+--[[
+	Calls callback(key, value, info) whenever any key in this store changes, on any server.
+	info is a ChangeInfo. Changes usually arrive within a second.
+
+		local watcher = events:Watch(function(key, value, info)
+			if not info.fromThisServer then
+				print(key, "changed to", value)
+			end
+		end)
+		-- Later: watcher:Stop()
+
+	It keeps one HTTP request open at a time (about 3 a minute while nothing changes).
+	If the server was unreachable for a long time, some changes in between may be skipped,
+	but you'll always get the latest one for each key that changes after that.
+]]
+function DataStore:Watch(callback: (string, any, ChangeInfo) -> ()): Watcher
+	assert(type(callback) == "function", "[OSSS] Watch expects a function")
+	local watcher = { _running = true }
+	function watcher:Stop()
+		self._running = false
+	end
+
+	task.spawn(function()
+		local cursor: number? = nil
+		local failures = 0
+		while watcher._running do
+			local query = if cursor
+				then string.format("?since=%d&wait=%d", cursor, WATCH_WAIT_SECONDS)
+				else ""
+			local ok, status, data = pcall(self._client._request, self._client, "GET", self._storePath .. "/changes" .. query, nil, false)
+			if not watcher._running then
+				break
+			end
+
+			if ok and status == 200 then
+				failures = 0
+				cursor = data.cursor
+				for _, change in data.changes do
+					local info: ChangeInfo = {
+						version = change.version,
+						updatedAt = change.updatedAt,
+						op = change.op,
+						fromThisServer = change.author == SERVER_ID,
+					}
+					if change.op == "remove" then
+						self._cache[change.key] = nil
+					else
+						self:_remember(change.key, change.value, toInfo(change))
+					end
+					local callbackOk, err = pcall(callback, change.key, change.value, info)
+					if not callbackOk then
+						warn("[OSSS] Watch callback errored: " .. tostring(err))
+					end
+				end
+			else
+				failures += 1
+				if failures == 1 or failures % 10 == 0 then
+					warn("[OSSS] Watch couldn't reach the server, retrying: " .. if ok then "HTTP " .. tostring(status) else tostring(status))
+				end
+				task.wait(math.min(2 ^ failures, 30))
+			end
+		end
+	end)
+
+	return watcher
 end
 
 return OSSS

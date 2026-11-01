@@ -4,7 +4,7 @@
 
 1. **Add the module.** Pick one:
    - **Copy and paste:** create a ModuleScript called `OSSS` in `ServerScriptService` and paste in [`roblox/src/init.luau`](../roblox/src/init.luau). If you're moving from DataStores, also add a ModuleScript called `Migrate` *inside* `OSSS` and paste in [`roblox/src/Migrate.luau`](../roblox/src/Migrate.luau).
-   - **Wally:** add `OSSS = "agamesteam/osss@0.1.0"` under `[server-dependencies]` in your `wally.toml`, once the package is published.
+   - **Wally:** add `OSSS = "agamesteam/osss@0.2.0"` under `[server-dependencies]` in your `wally.toml`, once the package is published.
    - **Rojo:** clone this repo (or add it as a git submodule) and point your project at it: `"OSSS": { "$path": "path/to/Open-Source-Storage-System/roblox/src" }`.
 2. **Allow HTTP requests.** In Studio, open *Game Settings → Security* and turn on **Allow HTTP Requests**.
 3. **Add your API key as a secret.** On the Creator Dashboard, open your experience, go to *Secrets*, and add a secret named `OSSS_API_KEY` with the key from your server. Set its domain to your server's address. Secrets keep the key out of your scripts, so it can't leak if someone gets a copy of your place.
@@ -45,6 +45,10 @@ end)
 | `store:ListKeysAsync(prefix?, pageSize?, cursor?)` | `keys, nextCursor` | `nextCursor` is `nil` on the last page. |
 | `store:GetSortedAsync(ascending, pageSize?, min?, max?, cursor?)` | `entries, nextCursor` | For [leaderboards](#leaderboards). |
 | `store:ClearCache(key?)` | | Forgets cached values for one key, or all of them. |
+| `store:ListVersionsAsync(key, limit?)` | `versions` | Saved versions, newest first. See [version history](#version-history). |
+| `store:GetVersionAsync(key, id)` | `value, info` | The value saved in one version. |
+| `store:RestoreVersionAsync(key, id)` | `version` | Saves an old version back as the newest. |
+| `store:Watch(callback)` | `watcher` | Calls `callback(key, value, info)` when any key in the store changes. See [watching for changes](#watching-for-changes). |
 | `store:LockAsync(key, ttlSeconds?)` | `ok, ownerJobId` | Session lock. See below. |
 | `store:UnlockAsync(key)` | `released` | |
 | `storage:BatchAsync(operations)` | `results` | Up to 100 operations in one request. |
@@ -213,3 +217,49 @@ local result = Migrate.copyAll({
 It goes as fast as your DataStore request budget allows. Keys already in OSSS are skipped unless you pass `overwrite = true`. Keys that fail, for example because a live server has them locked, are listed in `result.failed`. Run it again to retry them.
 
 Only the latest version of each key is copied. DataStore version history and metadata aren't.
+
+## Version history
+
+The server keeps the last 20 versions of every key (you can change this on the server), like DataStore versioning. Use it to undo a bad save or check what a player had before something went wrong:
+
+```lua
+local versions = playerData:ListVersionsAsync("123")
+for _, v in versions do
+	print(v.id, v.version, v.op, os.date("%c", v.updatedAt // 1000), v.size, v.author)
+end
+
+-- See what an old version held
+local oldData = playerData:GetVersionAsync("123", versions[3].id)
+
+-- Put it back. The current value stays in history, so this can be undone too.
+playerData:RestoreVersionAsync("123", versions[3].id)
+```
+
+`op` is `"remove"` for a deletion. To bring back a deleted key, restore the newest version whose `op` is `"set"`.
+
+Restoring is easiest from the [dashboard](self-hosting.md#dashboard): open a key, pick a version under **History**, and click **Restore this version**.
+
+## Watching for changes
+
+`Watch` tells this server when any key in a store changes, even when another server changed it. Use it for things every server should react to, like a global event, a shared shop rotation, or admin announcements:
+
+```lua
+local liveConfig = storage:GetDataStore("LiveConfig")
+
+local watcher = liveConfig:Watch(function(key, value, info)
+	if info.fromThisServer then
+		return -- we already know about our own changes
+	end
+	if key == "doubleCoins" then
+		doubleCoinsActive = value == true
+		print("Double coins is now", doubleCoinsActive)
+	end
+end)
+
+-- Any server (or the dashboard) can now flip it for everyone:
+liveConfig:SetAsync("doubleCoins", true)
+```
+
+Changes usually arrive within a second. `info` has `version`, `updatedAt`, `op` (`"set"` or `"remove"`, where `value` is `nil` for removes) and `fromThisServer`. Call `watcher:Stop()` when you no longer need it.
+
+Each watcher keeps one HTTP request open at a time, which is about 3 requests a minute while nothing changes. Watch a few stores of shared data, not one store per player.

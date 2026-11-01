@@ -1,6 +1,6 @@
 {
   "name": "osss-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Self-hosted storage server for Roblox games",
   "license": "MIT",
   "private": true,
@@ -13,6 +13,8 @@
     "gen-key": "node scripts/gen-key.ts",
     "backup": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env scripts/backup.ts",
     "export": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env scripts/export.ts",
+    "monitor": "node --env-file-if-exists=.env tools/uptime-monitor.ts",
+    "discord-leaderboard": "node --env-file-if-exists=.env tools/discord-leaderboard.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc"
   },

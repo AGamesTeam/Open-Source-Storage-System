@@ -21,6 +21,12 @@ export interface Config {
   backupIntervalHours: number;
   /** How many automatic backups to keep. 0 keeps all of them. */
   backupKeep: number;
+  /** A second folder (ideally another drive) that every backup is also copied to, or "" for none. */
+  backupCopyDir: string;
+  /** How many versions of each key to keep in history. At least 1. */
+  historyVersions: number;
+  /** Days of history to keep. 0 keeps it until it's pushed out by newer versions. */
+  historyDays: number;
 }
 
 const MIN_KEY_LENGTH = 32;
@@ -53,6 +59,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     backupDir: env.OSSS_BACKUP_DIR || "backups",
     backupIntervalHours: readInt(env, "OSSS_BACKUP_INTERVAL_HOURS", 0),
     backupKeep: readInt(env, "OSSS_BACKUP_KEEP", 14),
+    backupCopyDir: env.OSSS_BACKUP_COPY_DIR || "",
+    historyVersions: Math.max(1, readInt(env, "OSSS_HISTORY_VERSIONS", 20)),
+    historyDays: readInt(env, "OSSS_HISTORY_DAYS", 30),
   };
 }
 

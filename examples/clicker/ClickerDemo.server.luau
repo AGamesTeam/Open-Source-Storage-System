@@ -152,7 +152,7 @@ local function makeBoard()
 		return label
 	end
 
-	addLabel(0, 60, Color3.fromRGB(46, 204, 113)).Text = "ðŸ† All-time clicks"
+	addLabel(0, 60, Color3.fromRGB(46, 204, 113)).Text = "🏆 All-time clicks"
 	local subtitle = addLabel(1, 26, Color3.fromRGB(150, 155, 165))
 	subtitle.Text = "Loading from OSSS..."
 
@@ -168,7 +168,7 @@ local function makeBoard()
 		end
 		subtitle.Text = if #entries == 0
 			then "No clicks yet. Be the first!"
-			else "Saved in your own database Â· updates every " .. BOARD_REFRESH_EVERY .. "s"
+			else "Saved in your own database · updates every " .. BOARD_REFRESH_EVERY .. "s"
 	end
 end
 

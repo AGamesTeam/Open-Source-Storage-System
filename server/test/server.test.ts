@@ -292,3 +292,111 @@ describe("backup and export", () => {
     assert.ok(entries.some((e) => e.store === "scores" && e.key === "bob" && e.value === 120));
   });
 });
+
+describe("version history", () => {
+  const path = "/v1/stores/hist/keys/player";
+
+  test("records every write, newest first, and can show any version", async () => {
+    await call("PUT", path, { value: { coins: 1 } }, { "OSSS-Lock-Owner": "server-a" });
+    await call("PUT", path, { value: { coins: 2 } });
+    await call("PUT", path, { value: { coins: 3 } });
+
+    const { data } = await call("GET", `${path}/history`);
+    assert.deepEqual(data.versions.map((v: { version: number }) => v.version), [3, 2, 1]);
+    assert.equal(data.versions[2].author, "server-a");
+    assert.ok(data.versions[0].size > 0);
+
+    const old = await call("GET", `${path}/history/${data.versions[2].id}`);
+    assert.deepEqual(old.data.value, { coins: 1 });
+  });
+
+  test("restore writes an old value back as a new version", async () => {
+    const { data } = await call("GET", `${path}/history`);
+    const first = data.versions[data.versions.length - 1];
+
+    const restored = await call("POST", `${path}/restore`, { id: first.id, ifVersion: 3 });
+    assert.equal(restored.status, 200);
+    assert.equal(restored.data.version, 4);
+    assert.deepEqual((await call("GET", path)).data.value, { coins: 1 });
+
+    assert.equal((await call("POST", `${path}/restore`, { id: first.id, ifVersion: 3 })).status, 409);
+    assert.equal((await call("POST", `${path}/restore`, { id: 999999 })).status, 404);
+  });
+
+  test("removes are recorded and can be undone", async () => {
+    await call("DELETE", path);
+    const { data } = await call("GET", `${path}/history`);
+    assert.equal(data.versions[0].op, "remove");
+    assert.equal((await call("POST", `${path}/restore`, { id: data.versions[0].id })).status, 404);
+
+    await call("POST", `${path}/restore`, { id: data.versions[1].id });
+    assert.deepEqual((await call("GET", path)).data.value, { coins: 1 });
+  });
+
+  test("keeps only the newest versions of each key", () => {
+    const small = new Storage(":memory:", { historyVersions: 3 });
+    for (let i = 1; i <= 5; i++) small.set("s", "k", i);
+    assert.deepEqual(small.history("s", "k", 10).map((v) => v.version), [5, 4, 3]);
+    small.close();
+  });
+
+  test("pruning by age keeps each key's newest version", () => {
+    const small = new Storage(":memory:");
+    small.set("s", "a", 1);
+    small.set("s", "a", 2);
+    small.set("s", "b", 1);
+    assert.equal(small.pruneHistory(-1000), 1);
+    assert.deepEqual(small.history("s", "a", 10).map((v) => v.version), [2]);
+    assert.equal(small.history("s", "b", 10).length, 1);
+    small.close();
+  });
+});
+
+describe("change feed", () => {
+  test("starts from now, then returns new writes with values", async () => {
+    const start = await call("GET", "/v1/stores/feed/changes");
+    assert.deepEqual(start.data.changes, []);
+
+    await call("PUT", "/v1/stores/feed/keys/a", { value: 1 }, { "OSSS-Lock-Owner": "server-a" });
+    await call("PUT", "/v1/stores/other/keys/a", { value: 1 });
+    await call("DELETE", "/v1/stores/feed/keys/a");
+
+    const next = await call("GET", `/v1/stores/feed/changes?since=${start.data.cursor}`);
+    assert.deepEqual(
+      next.data.changes.map((c: { key: string; op: string; value: unknown; author: string | null }) => [c.key, c.op, c.value, c.author]),
+      [["a", "set", 1, "server-a"], ["a", "remove", null, null]],
+    );
+    assert.equal(next.data.reset, false);
+
+    const empty = await call("GET", `/v1/stores/feed/changes?since=${next.data.cursor}`);
+    assert.deepEqual(empty.data.changes, []);
+  });
+
+  test("waits for the next write when asked to", async () => {
+    const { data } = await call("GET", "/v1/stores/feed/changes");
+    const started = Date.now();
+    const waiting = call("GET", `/v1/stores/feed/changes?since=${data.cursor}&wait=5`);
+    setTimeout(() => call("PUT", "/v1/stores/feed/keys/b", { value: "hi" }), 200);
+
+    const result = await waiting;
+    assert.equal(result.data.changes[0].value, "hi");
+    assert.ok(Date.now() - started < 3000, "should return as soon as the write happens");
+  });
+
+  test("a wait with no writes times out with no changes", async () => {
+    const { data } = await call("GET", "/v1/stores/feed/changes");
+    const result = await call("GET", `/v1/stores/feed/changes?since=${data.cursor}&wait=1`);
+    assert.deepEqual(result.data.changes, []);
+    assert.equal(result.data.cursor >= data.cursor, true);
+  });
+});
+
+describe("backup copies", () => {
+  test("copies each backup to a second folder", async () => {
+    const dir = join(tempDir, "backups-main");
+    const copyDir = join(tempDir, "backups-copy");
+    await runBackup(storage, dir, 5, copyDir);
+    assert.equal(readdirSync(copyDir).length, 1);
+    assert.deepEqual(readdirSync(copyDir), readdirSync(dir));
+  });
+});
