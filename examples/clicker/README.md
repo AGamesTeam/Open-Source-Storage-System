@@ -1,6 +1,6 @@
 # Clicker example
 
-A tiny working game that saves to OSSS. It shows the main features in about 300 lines:
+A tiny working game that saves to OSSS. It shows the main features in one script:
 
 - A big green **button** in the world. Clicking it raises your **Clicks** leaderstat.
 - **Saves every 5 seconds** and when you leave. Each save writes your data and your leaderboard score in one request with `BatchAsync`.
