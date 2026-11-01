@@ -1,0 +1,39 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local data and databases
+data/
+*.db
+*.sqlite
+*.sqlite3
+backups/
+
+# Roblox Studio files and lock files
+*.rbxl.lock
+*.rbxlx.lock
+sourcemap.json
+
+# Dependencies and builds
+node_modules/
+dist/
+build/
+target/
+Packages/
+ServerPackages/
+DevPackages/
+
+# Logs
+*.log
+logs/
+
+# Editor and OS files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
